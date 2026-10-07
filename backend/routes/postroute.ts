@@ -92,7 +92,7 @@ router.get('/feed', verifyToken, async (req: AuthRequest, res: Response) => {
       return res.status(401).json({ error: 'Invalid user authentication' });
     }
 
-    // 1. Find the current user to get their 'following' list
+    
     const currentUser = await User.findById(currentUserId);
     if (!currentUser) {
       return res.status(404).json({ error: 'User not found' });

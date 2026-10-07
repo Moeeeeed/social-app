@@ -1,7 +1,11 @@
 import { Request, Response, NextFunction } from 'express';
 import Stripe from 'stripe';
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || '');
+const stripeSecretKey = process.env.STRIPE_SECRET_KEY;
+if (!stripeSecretKey) {
+  throw new Error('CRITICAL: STRIPE_SECRET_KEY is not defined in environment variables');
+}
+const stripe = new Stripe(stripeSecretKey);
 
 export const validateStripeWebhook = (req: Request, res: Response, next: NextFunction) => {
   const signature = req.headers['stripe-signature'] as string;

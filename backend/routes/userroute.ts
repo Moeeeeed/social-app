@@ -5,11 +5,12 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import Stripe from 'stripe';
 import { verifyToken, AuthRequest } from '../middleware/auth';
+import { upload } from '../middleware/upload';
+
 
 const router = Router();
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || '');
-
 const isValidEmail = (email: string): boolean => {
   const atIndex = email.indexOf('@');
   const dotIndex = email.lastIndexOf('.');
@@ -24,19 +25,16 @@ router.post('/', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Name is required' });
     }
 
-    if (!email || typeof email !== 'string' || !isValidEmail(email)) 
-    {
+    if (!email || typeof email !== 'string' || !isValidEmail(email)) {
       return res.status(400).json({ error: 'Valid email is required' });
     }
 
-    if (!password || typeof password !== 'string' || password.length < 6) 
-    {
+    if (!password || typeof password !== 'string' || password.length < 6) {
       return res.status(400).json({ error: 'Password must be at least 6 characters' });
     }
 
     const existingUser = await User.findOne({ email });
-    if (existingUser) 
-    {
+    if (existingUser) {
       return res.status(400).json({ error: 'Email already in use' });
     }
 
@@ -45,7 +43,7 @@ router.post('/', async (req: Request, res: Response) => {
 
     const newUser = new User({ name, email, password: hashedPassword });
     const savedUser = await newUser.save();
-    
+
     res.status(201).json({
       message: 'User created successfully',
       user: { id: savedUser._id, name: savedUser.name, email: savedUser.email }
@@ -114,8 +112,8 @@ router.post('/create-checkout-session', verifyToken, async (req: AuthRequest, re
         },
       ],
       mode: 'payment',
-      success_url: `http://localhost:3000/api/users/payment-success?userId=${userId}`,
-      cancel_url: `http://localhost:3000/api/users/payment-cancel`,
+      success_url: `http://localhost:3000/payment-success`,
+      cancel_url: `http://localhost:3000/payment-cancel`,
     });
 
     res.status(200).json({ url: session.url });
@@ -125,9 +123,10 @@ router.post('/create-checkout-session', verifyToken, async (req: AuthRequest, re
   }
 });
 
-router.get('/payment-success', async (req: Request, res: Response) => {
+router.post('/payment-success', verifyToken, async (req: AuthRequest, res: Response) => {
   try {
-    const userId = req.query.userId as string;
+    const userId = req.user?.id;
+
     if (userId) {
       await User.findByIdAndUpdate(userId, { isPaid: true });
     }
@@ -140,6 +139,20 @@ router.get('/payment-success', async (req: Request, res: Response) => {
 
 router.get('/payment-cancel', (req: Request, res: Response) => {
   res.status(200).json({ message: 'Payment was cancelled.' });
+});
+
+router.get('/profile', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user?.id;
+    const user = await User.findById(userId).select('-password');
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    res.status(200).json(user);
+  } catch (error) {
+    console.error('Fetch profile error:', error);
+    res.status(500).json({ status: 500, error: 'Database error: Could not fetch profile', message: String(error) });
+  }
 });
 
 router.get('/', async (req: Request, res: Response) => {
@@ -184,7 +197,7 @@ router.get('/:id', async (req: Request, res: Response) => {
 
 router.post('/:id/follow', verifyToken, async (req: AuthRequest, res: Response) => {
   try {
-    const userToFollowId = (req.params.id as string); 
+    const userToFollowId = (req.params.id as string);
     const currentUserId = (req.user?.id as string);
 
     if (!userToFollowId || userToFollowId.length !== 24 || !/^[0-9a-f]{24}$/i.test(userToFollowId)) {
@@ -226,7 +239,7 @@ router.post('/:id/follow', verifyToken, async (req: AuthRequest, res: Response) 
 
 router.post('/:id/unfollow', verifyToken, async (req: AuthRequest, res: Response) => {
   try {
-    const userToUnfollowId = (req.params.id as string); 
+    const userToUnfollowId = (req.params.id as string);
     const currentUserId = (req.user?.id as string);
 
     if (!userToUnfollowId || userToUnfollowId.length !== 24 || !/^[0-9a-f]{24}$/i.test(userToUnfollowId)) {
@@ -263,6 +276,99 @@ router.post('/:id/unfollow', verifyToken, async (req: AuthRequest, res: Response
   } catch (error) {
     console.error('Unfollow user error:', error);
     res.status(500).json({ status: 500, error: 'Database error: Could not unfollow user', message: String(error) });
+  }
+});
+
+router.put('/avatar', verifyToken, upload.single('avatar'), async (req: AuthRequest, res: Response) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No image file provided' });
+    }
+
+    const b64 = Buffer.from(req.file.buffer).toString('base64');
+    let mimeType = req.file.mimetype;
+    const base64Image = `data:${mimeType};base64,${b64}`;
+
+    const userId = req.user?.id;
+
+    const updatedUser = await User.findByIdAndUpdate(
+      userId,
+      { avatar: base64Image },
+      { new: true }
+    ).select('-password');
+
+    if (!updatedUser) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    res.status(200).json({
+      message: 'Avatar uploaded and stored as Base64 successfully!',
+      avatar: updatedUser.avatar,
+    });
+  } catch (error) {
+    console.error('Avatar upload error:', error);
+    res.status(500).json({ status: 500, error: 'Server error while uploading avatar', message: String(error) });
+  }
+});
+router.get('/:id/avatar', async (req: Request, res: Response) => {
+  try {
+    const userId = req.params.id;
+
+    if (!userId || userId.length !== 24 || !/^[0-9a-f]{24}$/i.test(userId)) {
+      return res.status(400).json({ error: 'Invalid user ID format' });
+    }
+
+    const user = await User.findById(userId);
+    if (!user || !user.avatar) {
+      return res.status(404).json({ error: 'Avatar not found for this user' });
+    }
+
+    const matches = user.avatar.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+
+    if (!matches || matches.length !== 3) {
+      return res.status(400).json({ error: 'Invalid avatar format in database' });
+    }
+
+    let mimeType = matches[1];
+    const base64Data = matches[2];
+
+
+    if (mimeType === 'application/octet-stream') {
+      mimeType = 'image/jpeg';
+      mimeType = 'image/png';
+    }
+
+    const imageBuffer = Buffer.from(base64Data, 'base64');
+
+    res.set('Content-Type', mimeType);
+    res.send(imageBuffer);
+  } catch (error) {
+    console.error('Fetch avatar error:', error);
+    res.status(500).json({ status: 500, error: 'Server error while fetching avatar', message: String(error) });
+  }
+});
+router.delete('/avatar', verifyToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user?.id;
+    
+    if (!userId) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const updatedUser = await User.findByIdAndUpdate(
+      userId,
+      { avatar: null },
+      { new: true }
+    ).select('-password');
+
+    if (!updatedUser) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    res.status(200).json({ message: 'Avatar deleted successfully' });
+  } catch (error) {
+    console.error('Delete avatar error:', error);
+    res.status(500).json({ status: 500, error: 'Server error while deleting avatar', message: String(error) });
   }
 });
 
